@@ -1,0 +1,41 @@
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"log"
+	"os"
+	"strings"
+)
+
+func searchInAFileAndPrintResutls(filePath, str string) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	lineNumber := 1
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, str) {
+			fmt.Printf("%d : %s", lineNumber, str)
+		}
+
+		lineNumber++
+	}
+
+	return nil
+}
+
+func main() {
+	if len(os.Args) < 3 {
+		fmt.Printf("Usage : ggrep <str> <file>")
+	}
+
+	if err := searchInAFileAndPrintResutls(os.Args[1], os.Args[2]); err != nil {
+		log.Fatalf("failed to search in file, err :\n%w", err)
+	}
+}
