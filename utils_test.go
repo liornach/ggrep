@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"testing"
@@ -342,7 +344,7 @@ func TestInsertToString(t *testing.T) {
 }
 
 func expGot(exp, res any) string {
-	return fmt.Sprintf("expected %v, got %v", exp, res)
+	return fmt.Sprintf("expected '%v', got '%v'", exp, res)
 }
 
 func TestOverrideString(t *testing.T) {
@@ -465,10 +467,15 @@ func TestReadAt(t *testing.T) {
 }
 
 func TestInsertToFile(t *testing.T) {
-	const first = "This is the 1st line\n"
-	const second = "This is 2nd\n"
-	const third = "This is 3rd\n"
-	const testText = first + second + third
+	const first = "This is the 1st line"
+	const second = "This is 2nd"
+	const third = "This is 3rd"
+	lines := []string{first, second, third}
+	var testText strings.Builder
+	for _, l := range lines {
+		testText.WriteString(l + "\n")
+	}
+
 	tmp := createTemp()
 	defer tmp.Close()
 
@@ -479,85 +486,104 @@ func TestInsertToFile(t *testing.T) {
 
 		tmp.f.Seek(0, 0)
 
-		if _, err := tmp.f.WriteString(testText); err != nil {
+		if _, err := tmp.f.WriteString(testText.String()); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	// test insert and NOT override at the begining
-	initTmpFile()
-	str := "Hi! "
-	err := InsertToFile(tmp.Name(), str, 1, 1, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := ReadAt(tmp.Name(), 1, 1, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	exp := str + "This"
-	if res != exp {
-		t.Log("bad insert to file")
-		t.Fatal(expGot(exp, res))
+	test := func(str string, line, col int, override bool) {
+		onErr := func(err error) {
+			t.Log(string(debug.Stack()))
+			t.Fatal(err)
+		}
+		initTmpFile()
+		err := InsertToFile(tmp.Name(), str, line, col, override)
+		if err != nil {
+			onErr(err)
+		}
+		lineIdx := line - 1
+		orgLine := lines[lineIdx]
+
+		var exp string
+		if override {
+			exp, err = OverrideString(orgLine, str, col-1)
+		} else {
+			exp, err = InsertToString(orgLine, str, col-1)
+		}
+
+		if err != nil {
+			onErr(err)
+		}
+
+		res, err := ReadLine(tmp.Name(), line)
+		if err != nil {
+			onErr(err)
+		}
+
+		if res != exp {
+			t.Log("bad insert to file")
+			onErr(errors.New(expGot(exp, res)))
+		}
+
+		// make sure the rest of the lines are ok
+		for i, exp := range lines {
+			if i == lineIdx {
+				continue
+			}
+
+			lineNum := i + 1
+			res, err := ReadLine(tmp.Name(), lineNum)
+			if err != nil {
+				onErr(err)
+			}
+			if exp != res {
+				errStr := "bad rest of file\n"
+				onErr(errors.New(errStr + expGot(exp, res)))
+			}
+		}
 	}
 
-	// test insert and override at the begining
-	initTmpFile()
-	err = InsertToFile(tmp.Name(), str, 1, 1, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err = ReadAt(tmp.Name(), 1, 1, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	exp = str + " is "
-	if res != exp {
-		t.Log("bad insert to file (override)")
-		t.Fatal(expGot(exp, res))
-	}
-	exp = "This is 2nd"
-	res, err = ReadAt(tmp.Name(), 2, 1, len(exp)) // make sure the rest of the file is fine
-	if err != nil {
-		t.Fatal(err) // must debug this one
-	}
-	if res != exp {
-		t.Log("bad isnert to file (2nd line validation)")
-		t.Fatal(expGot(exp, res))
+	testNotOverride := func(str string, line, col int) {
+		test(str, line, col, false)
 	}
 
-	// test insert and NOT override to begining of the 2nd line
-	initTmpFile()
-	err = InsertToFile(tmp.Name(), str, 2, 1, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	exp = str + second[:5]
-	res, err = ReadAt(tmp.Name(), 2, 1, len(str)+5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res != exp {
-		t.Log("bad insert to file (2nd line insert and NOT override)")
-		t.Fatal(expGot(exp, res))
+	testOverride := func(str string, line, col int) {
+		test(str, line, col, true)
 	}
 
-	// test insert and override to the begining of the 2nd line
-	initTmpFile()
-	err = InsertToFile(tmp.Name(), str, 2, 1, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(str)+3 > len(second) {
-		panic("bad test parameters")
-	}
-	exp = str + second[len(str):len(str)+3]
-	res, err = ReadAt(tmp.Name(), 2, 1, len(str)+3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res != exp {
-		t.Log("bad insert to file (2nd line insert and override)")
-		t.Fatal(expGot(exp, res))
-	}
+	// test insert at the begining of a line
+	testNotOverride("Hi! ", 1, 1)
+	testNotOverride("Hola!", 2, 1)
+	testNotOverride("HEYY", 3, 1)
+	testOverride("Hi! ", 1, 1)
+	testOverride("Hola!", 2, 1)
+	testOverride("ADIOS MOCHACUS!", 3, 1)
+	// to the middle
+	testNotOverride("Hi! ", 1, 5)
+	testNotOverride("Hola!", 2, 4)
+	testNotOverride("HEYY", 3, 3)
+	testOverride("Hi! ", 1, 7)
+	testOverride("Hola!", 2, 3)
+	testOverride("ADIOS MOCHACUS!", 3, 2)
+	// at the end
+	testNotOverride("Hi! ", 1, len(lines[0]))
+	testNotOverride("Ho!", 2, len(lines[1]))
+	testNotOverride("HEYY", 3, len(lines[2]))
+	testOverride("Hi! ", 1, len(lines[0]))
+	testOverride("Hola!", 2, len(lines[1]))
+	testOverride("ADIOS MOCHACUS!", 3, len(lines[2]))
+	// long strings
+	testNotOverride("Hiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii!", 1, 5)
+	testNotOverride("Holaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!", 2, 4)
+	testNotOverride("HEYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY", 3, 3)
+	testOverride("Hiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii! ", 1, 7)
+	testOverride("Holaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!", 2, 3)
+	testOverride("ADIOS MOCHACUSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS!", 3, 2)
+	// empty strings
+	testNotOverride("", 1, 1)
+	testNotOverride("", 2, 1)
+	testNotOverride("", 3, 1)
+	testOverride("", 1, 1)
+	testOverride("", 2, 1)
+	testOverride("", 3, 1)
 }

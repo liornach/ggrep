@@ -247,7 +247,7 @@ func Truncate(filePath string) error {
 	return nil
 }
 
-func ReadAt(filePath string, line, col, n int) (string, error) {
+func ReadLine(filePath string, line int) (string, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return "", err
@@ -264,10 +264,18 @@ func ReadAt(filePath string, line, col, n int) (string, error) {
 		}
 	}
 
-	startIdx := col - 1
-	endIdx := min(len(curLineText), startIdx+n)
+	return curLineText, nil
+}
 
-	return curLineText[startIdx:endIdx], nil
+func ReadAt(filePath string, line, col, n int) (string, error) {
+	lineText, err := ReadLine(filePath, line)
+	if err != nil {
+		return "", err
+	}
+
+	startIdx := col - 1
+	endIdx := min(len(lineText), startIdx+n)
+	return lineText[startIdx:endIdx], nil
 }
 
 func copyContent(from, to string) error {
@@ -350,13 +358,14 @@ func InsertToFile(filePath, str string, lineNum, col int, override bool) error {
 	}
 
 	// we're at the target line
-	requiredLen := col + len(str)
-	if len(line) < requiredLen {
-		line, err = ExtendString(line, requiredLen-len(line), ' ')
-		if err != nil {
-			return err
-		}
-	}
+	// something is bad here
+	// requiredLen := col + len(str)
+	// if len(line) < requiredLen {
+	// 	line, err = ExtendString(line, requiredLen-len(line), ' ')
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// }
 
 	idx := col - 1
 	if override {
