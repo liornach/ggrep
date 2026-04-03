@@ -380,4 +380,38 @@ func TestMultipleOccurences(t *testing.T) {
 			t.Fatal("expected different index")
 		}
 	}
+
+	occrs, err = FindAllOccurences(tf.Name(), "fourth")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(occrs) != 2 {
+		t.Fatal("expected 2 occurences")
+	}
+
+	if occrs[0].lineNum != 3 {
+		t.Fatal("expected 1st occurence to be on line 3")
+	}
+
+	if occrs[1].lineNum != 4 {
+		t.Fatal("expected 2nd occurence to be on line 4")
+	}
+
+	if len(occrs[0].indexes) != 1 {
+		t.Fatal("expected only one index")
+	}
+
+	expIdx := strings.Index(lines[2], "fourth")
+	if occrs[0].indexes[0] != expIdx {
+		t.Fatal("expected different index here")
+	}
+
+	if len(occrs[1].indexes) != 1 {
+		t.Fatal("expected one index")
+	}
+
+	if occrs[1].indexes[0] != strings.Index(lines[3], "fourth") {
+		t.Fatal("expected different index")
+	}
 }
