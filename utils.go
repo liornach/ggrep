@@ -17,7 +17,7 @@ func OpenForRead(filePath string) (*os.File, error) {
 	return os.Open(filePath)
 }
 
-func CountLines(filePath string) (uint64, error) {
+func CountLines(filePath string) (int, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return 0, err
@@ -25,7 +25,7 @@ func CountLines(filePath string) (uint64, error) {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	count := uint64(0)
+	count := 0
 	for scanner.Scan() {
 		count++
 	}
@@ -86,7 +86,16 @@ func MbToBytes(mb int) int {
 	return mb * 1024 * 1024
 }
 
-func AppendEmptyLines(filePath string, lines int) error {
+func AppendEmptyLines(dst io.Writer, lines int) error {
+	newLines := slices.Repeat([]byte{'\n'}, lines)
+	_, err := dst.Write(newLines)
+	if err != nil {
+		return fmt.Errorf("failed to write to file:\n%w", err)
+	}
+	return nil
+}
+
+func AppendEmptyLinesPaths(filePath string, lines int) error {
 	f, err := OpenForWrite(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to open file:\n%w", err)
@@ -110,14 +119,14 @@ func FileSize(filePath string) (int64, error) {
 	return info.Size(), nil
 }
 
-func CountChars(filePath string) (uint64, error) {
+func CountChars(filePath string) (int, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return 0, err
 	}
 	defer f.Close()
 
-	count := uint64(0)
+	count := 0
 
 	reader := bufio.NewReader(f)
 	for {
@@ -134,14 +143,14 @@ func CountChars(filePath string) (uint64, error) {
 	return count, err
 }
 
-func CountChar(filePath string, c rune) (uint64, error) {
+func CountChar(filePath string, c rune) (int, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return 0, err
 	}
 	defer f.Close()
 
-	count := uint64(0)
+	count := 0
 
 	reader := bufio.NewReader(f)
 	for {
@@ -185,8 +194,13 @@ func idxOutOfStrErr(str string, idx int) error {
 }
 
 func InsertToString(org, str string, idx int) (string, error) {
-	if err := idxOutOfStrErr(org, idx); err != nil {
-		return "", err
+	reqLen := idx
+	if len(org) < reqLen {
+		extOrg, err := ExtendString(org, reqLen-len(org), ' ')
+		if err != nil {
+			return "", fmt.Errorf("error extending string(at InsertToString):\n%w", err)
+		}
+		org = extOrg
 	}
 
 	prefix := org[:idx]
@@ -196,7 +210,12 @@ func InsertToString(org, str string, idx int) (string, error) {
 
 func OverrideString(org, str string, idx int) (string, error) {
 	if err := idxOutOfStrErr(org, idx); err != nil {
-		return "", err
+		reqLen := idx + 1
+		needToExtendBy := reqLen - len(org)
+		org, err = ExtendString(org, needToExtendBy, ' ')
+		if err != nil {
+			return "", err
+		}
 	}
 
 	prefix := org[:idx]
@@ -221,17 +240,27 @@ func NewScannerReader(r io.Reader) scannerReader {
 	}
 }
 
-func (s *scannerReader) Read() (string, bool) {
+func (s *scannerReader) SkipLines(n int) error {
+	for range n {
+		if _, err := s.Read(); err != nil {
+			return fmt.Errorf("error at SkipLines:\n%w", err)
+		}
+	}
+
+	return nil
+}
+
+func (s *scannerReader) Read() (string, error) {
 	if !s.s.Scan() {
-		return "", false
+		if s.s.Err() == nil {
+			return "", io.EOF
+		}
+
+		return "", s.s.Err()
 	}
 
 	s.curLine++
-	return s.s.Text(), true
-}
-
-func (s *scannerReader) Err() error {
-	return s.s.Err()
+	return s.s.Text(), nil
 }
 
 // return the last read line
@@ -254,17 +283,38 @@ func ReadLine(filePath string, line int) (string, error) {
 	}
 	defer f.Close()
 
-	scanner := NewScannerReader(f)
-	var curLineText string
-	var ok bool
-	for scanner.Line() < line {
-		curLineText, ok = scanner.Read()
-		if !ok {
-			return "", fmt.Errorf("could not read")
+	// scanner := NewScannerReader(f)
+	// var curLineText string
+	// for scanner.Line() < line {
+	// 	curLineText, err = scanner.Read()
+	// 	if err != nil {
+	// 		return "", fmt.Errorf("error at ReadLine:\n%w", err)
+	// 	}
+	// }
+
+	s := bufio.NewScanner(f)
+	linesRead := 0
+	for linesRead < line-1 {
+		if ok := s.Scan(); !ok {
+			if s.Err() == nil {
+				return "", fmt.Errorf("not enough lines (stopped at %d)", linesRead)
+			}
+
+			return "", s.Err()
 		}
+		linesRead++
 	}
 
-	return curLineText, nil
+	if ok := s.Scan(); !ok {
+		if s.Err() == nil {
+			return "", fmt.Errorf("not enough lines (stopped at %d)", linesRead)
+		}
+
+		return "", s.Err()
+	}
+
+	lineText := s.Text()
+	return lineText, nil
 }
 
 func ReadAt(filePath string, line, col, n int) (string, error) {
@@ -278,123 +328,325 @@ func ReadAt(filePath string, line, col, n int) (string, error) {
 	return lineText[startIdx:endIdx], nil
 }
 
-func copyContent(from, to string) error {
-	tf, err := OpenForWrite(to)
+func copyFileContent(src, dst string) error {
+	srcf, err := OpenForRead(src)
 	if err != nil {
 		return err
 	}
-	defer tf.Close()
+	defer srcf.Close()
 
-	ff, err := OpenForRead(from)
+	dstf, err := OpenForWrite(dst)
 	if err != nil {
 		return err
 	}
-	defer ff.Close()
+	defer dstf.Close()
 
-	s := NewScannerReader(ff)
-
-	if err = Truncate(tf.Name()); err != nil {
+	if err := Truncate(dst); err != nil {
 		return err
 	}
 
-	for {
-		lineText, ok := s.Read()
-		if !ok {
-			if err = s.Err(); err != nil {
+	_, err = io.Copy(dstf, srcf)
+	return err
+}
+
+type InsertToFileArg struct {
+	line, col int
+	override  bool
+	str       string
+}
+
+func IsEof(e error) bool {
+	return errors.Is(e, io.EOF)
+}
+
+// AppendFromTo copy dstn lines from the file at srcpath to the file at dstpath,
+// starting the line srcn. The copied lines are appended to dstpath.
+// The function returned the actual copied lines. In case srcpath
+// has less than dstn + srcn lines, the function copy what is can.
+func AppendFromTo(srcpath, dstpath string, dstn, srcn int) (int, error) {
+	if dstn <= 0 {
+		return 0, nil
+	}
+
+	src, err := OpenForRead(srcpath)
+	if err != nil {
+		return -1, fmt.Errorf("error open file for read in AppendNLines")
+	}
+	defer src.Close()
+
+	dst, err := OpenForWrite(dstpath)
+	if err != nil {
+		return -1, fmt.Errorf("error open file for write in AppendNLines")
+	}
+	defer dst.Close()
+
+	// skip to srcn line
+	sr := NewScannerReader(src)
+	if err := sr.SkipLines(srcn - 1); err != nil {
+		return 0, fmt.Errorf("error at AppenNLines:\n%w", err)
+	}
+
+	linesCopied := 0
+	dw := bufio.NewWriter(dst)
+	defer dw.Flush()
+
+	for linesCopied < dstn {
+		line, err := sr.Read()
+		if err != nil {
+			return linesCopied, err
+		}
+
+		if _, err := dw.WriteString(line + "\n"); err != nil {
+			return linesCopied, err
+		}
+
+		linesCopied++
+	}
+
+	return linesCopied, nil
+}
+
+func sortByLineAndCol(inserts []InsertToFileArg) {
+	slices.SortStableFunc(inserts, func(l InsertToFileArg, r InsertToFileArg) int {
+		if l.line == r.line {
+			return l.col - r.col
+		}
+
+		return l.line - r.line
+	})
+}
+
+func InsertToFileMultiple(srcPath string, inserts []InsertToFileArg) error {
+	if len(inserts) == 0 {
+		return nil
+	}
+
+	srcf, err := OpenForRead(srcPath)
+	if err != nil {
+		return err
+	}
+	defer srcf.Close()
+
+	tmp, err := os.CreateTemp("", "")
+	if err != nil {
+		return err
+	}
+	defer tmp.Close()
+
+	sortByLineAndCol(inserts)
+
+	if minLine := inserts[0].line; minLine <= 0 {
+		return fmt.Errorf("insert line must be > 0 (got %d)", minLine)
+	}
+
+	for i := range inserts {
+		if c := inserts[i].col; c <= 0 {
+			return fmt.Errorf("insert col must be > 0 (got %d)", c)
+		}
+	}
+
+	srcLinesNum, err := CountLines(srcPath)
+	if err != nil {
+		return err
+	}
+
+	maxInsertLine := inserts[len(inserts)-1].line
+	if srcLinesNum < maxInsertLine {
+		if err := AppendEmptyLinesPaths(srcPath, maxInsertLine-srcLinesNum); err != nil {
+			return err
+		}
+		srcLinesNum = maxInsertLine
+	}
+
+	insertOrOverride := func(org string, arg InsertToFileArg) (string, error) {
+		if arg.override {
+			return OverrideString(org, arg.str, arg.col-1)
+		}
+
+		return InsertToString(org, arg.str, arg.col-1)
+	}
+
+	var nextLineToInsert string
+	tmpWriter := bufio.NewWriter(tmp)
+	linesWritten := 0
+	writeNextLine := func() error {
+		if _, err = tmpWriter.WriteString(nextLineToInsert + "\n"); err != nil {
+			return err
+		}
+		linesWritten++
+		return nil
+	}
+
+	srcScanner := bufio.NewScanner(srcf)
+	srcLineScanned := 0
+	readLineFromSrc := func() (bool, error) {
+		if ok := srcScanner.Scan(); !ok {
+			return false, srcScanner.Err()
+		}
+		srcLineScanned++
+		return true, nil
+	}
+
+	const initInsertLine = -1
+	prevInsertLine := initInsertLine
+
+	for i, arg := range inserts {
+		insertLine := inserts[i].line
+
+		if insertLine == prevInsertLine {
+			nextLineToInsert, err = insertOrOverride(nextLineToInsert, arg)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+
+		if prevInsertLine != initInsertLine { // some line is pending to be written
+			if err := writeNextLine(); err != nil {
+				return err
+			}
+		}
+
+		for {
+			if ok, err := readLineFromSrc(); !ok {
+				if err == nil { // eof error
+					panic("doesn't make sense, hard logic error")
+				}
 				return err
 			}
 
-			break
+			if srcLineScanned == insertLine {
+				nextLineToInsert, err = insertOrOverride(srcScanner.Text(), arg)
+				if err != nil {
+					return err
+				}
+
+				break // can not write this line now, maybe the next arg's line is the same
+			}
+
+			nextLineToInsert = srcScanner.Text()
+			if err := writeNextLine(); err != nil {
+				return err
+			}
 		}
-		writeLineToOpenFile(tf, lineText)
+
+		prevInsertLine = insertLine
+	}
+
+	if linesWritten != srcLineScanned { // some line is pending to be written
+		if err := writeNextLine(); err != nil {
+			return err
+		}
+	}
+
+	// copy the rest
+	for srcLineScanned < srcLinesNum {
+		if ok, err := readLineFromSrc(); !ok {
+			if err != nil {
+				return err
+			}
+
+			// else this is an eof error
+			panic("eof error should not have happened")
+		}
+
+		nextLineToInsert = srcScanner.Text()
+		if err := writeNextLine(); err != nil {
+			return err
+		}
+	}
+
+	if err := tmpWriter.Flush(); err != nil {
+		return err
+	}
+
+	if err := copyFileContent(tmp.Name(), srcf.Name()); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func writeLineToOpenFile(f *os.File, line string) error {
-	_, err := f.WriteString(line + "\n")
-	return err
-}
-
-func InsertToFile(filePath, str string, lineNum, col int, override bool) error {
-	lines, err := CountLines(filePath)
+func InsertToFile(src, str string, lineNum, col int, override bool) error {
+	lines, err := CountLines(src) // maybe skip this one and the one after that, somehow lazily do all neccessary work
 	if err != nil {
-		return err
+		return fmt.Errorf("error counting lines:\n%w", err)
 	}
 
-	if lines < uint64(lineNum) {
-		if err = AppendEmptyLines(filePath, lineNum-int(lines)); err != nil {
-			return err
+	if lines < lineNum {
+		if err = AppendEmptyLinesPaths(src, lineNum-int(lines)); err != nil {
+			return fmt.Errorf("error append empty lines:\n%w", err)
 		}
 	}
 
-	f, err := OpenForRead(filePath)
+	srcf, err := OpenForRead(src)
 	if err != nil {
-		return err
+		return fmt.Errorf("error open file for read:\n%w", err)
 	}
 
-	tmpFile, err := os.CreateTemp("", "")
+	tmpf, err := os.CreateTemp("", "")
 	if err != nil {
-		return err
+		return fmt.Errorf("error create temp file:\n%w", err)
 	}
 
-	scanner := NewScannerReader(f)
+	scanner := NewScannerReader(srcf)
 
 	// seek the correct line, copy until then
-	line, ok := scanner.Read()
-	if !ok {
-		return fmt.Errorf("could not read, err : %w", scanner.Err())
+	line, err := scanner.Read()
+	if err != nil {
+		return fmt.Errorf("could not read, err : %w", err)
 	}
+
+	tw := bufio.NewWriter(tmpf)
 	for scanner.Line() < lineNum {
-		if err := writeLineToOpenFile(tmpFile, line); err != nil {
-			return err
+		if _, err := tw.WriteString(line + "\n"); err != nil {
+			return fmt.Errorf("error write string(first iteration):\n%w", err)
 		}
 
-		line, ok = scanner.Read()
-		if !ok {
-			return fmt.Errorf("could not read, err : %w", scanner.Err())
+		line, err = scanner.Read()
+		if err != nil {
+			return fmt.Errorf("could not read, err : %w", err)
 		}
 	}
-
-	// we're at the target line
-	// something is bad here
-	// requiredLen := col + len(str)
-	// if len(line) < requiredLen {
-	// 	line, err = ExtendString(line, requiredLen-len(line), ' ')
-	// 	if err != nil {
-	// 		return err
-	// 	}
-	// }
 
 	idx := col - 1
 	if override {
 		line, err = OverrideString(line, str, idx)
+		if err != nil {
+			return fmt.Errorf("error override string:\n%w", err)
+		}
 	} else {
 		line, err = InsertToString(line, str, idx)
+		if err != nil {
+			return fmt.Errorf("error insert to string:\n%w", err)
+		}
 	}
 
-	if err != nil {
-		return err
-	}
-
-	if err := writeLineToOpenFile(tmpFile, line); err != nil {
-		return err
+	if _, err := tw.WriteString(line + "\n"); err != nil {
+		return fmt.Errorf("error write corrected line:\n%w", err)
 	}
 
 	// copy the rest
 	for {
-		line, ok := scanner.Read()
-		if !ok {
-			break
+		line, err := scanner.Read()
+		if err != nil {
+			if IsEof(err) {
+				break
+			}
+
+			return err
 		}
 
-		if err := writeLineToOpenFile(tmpFile, line); err != nil {
-			return err
+		if _, err := tw.WriteString(line + "\n"); err != nil {
+			return fmt.Errorf("error write string (2nd iteration):\n%w", err)
 		}
 	}
 
-	if err = copyContent(tmpFile.Name(), filePath); err != nil {
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+
+	if err = copyFileContent(tmpf.Name(), srcf.Name()); err != nil {
 		return err
 	}
 

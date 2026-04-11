@@ -30,7 +30,7 @@ func initTmpFileWithThreeLines() *tempFile {
 	return tmp
 }
 
-func initTmpFileWithLines(lines []string) *tempFile {
+func initTmpWithLines(lines []string) *tempFile {
 	tmp := createTemp()
 	tmpPath := tmp.Name()
 
@@ -223,7 +223,7 @@ func TestFindSingleOccurenceFirstLineEnd(t *testing.T) {
 		"Third is worst",
 	}
 
-	tf := initTmpFileWithLines(lines)
+	tf := initTmpWithLines(lines)
 	defer tf.Close()
 
 	str := "best"
@@ -281,7 +281,7 @@ func TestRestSingleOccurence(t *testing.T) {
 		"4th Is the actual best",
 	}
 
-	tf := initTmpFileWithLines(lines)
+	tf := initTmpWithLines(lines)
 	defer tf.Close()
 
 	// 2nd line
@@ -305,7 +305,7 @@ func TestMultipleOccurencesFirstLine(t *testing.T) {
 		"But the previous one was, so it's the one that's actually sucks",
 	}
 
-	tf := initTmpFileWithLines(lines)
+	tf := initTmpWithLines(lines)
 	defer tf.Close()
 
 	firstLine := lines[0]
@@ -355,7 +355,7 @@ func TestMultipleOccurences(t *testing.T) {
 		"fourth line",
 	}
 
-	tf := initTmpFileWithLines(lines)
+	tf := initTmpWithLines(lines)
 	defer tf.Close()
 
 	occrs, err := FindAllOccurences(tf.Name(), "line")
@@ -413,5 +413,35 @@ func TestMultipleOccurences(t *testing.T) {
 
 	if occrs[1].indexes[0] != strings.Index(lines[3], "fourth") {
 		t.Fatal("expected different index")
+	}
+}
+
+func BenchmarkHugeFile(b *testing.B) {
+	tf := createTemp()
+	defer tf.Close()
+
+	b.Log("generating file")
+	if err := GeneraetHugeFileMb(10, 'r', 500, tf.Name()); err != nil {
+		b.Fatal(err)
+	}
+	b.Log("counting lines")
+	linesCount, err := CountLines(tf.Name())
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.Logf("lines : %d", linesCount)
+	// every 500 lines insert some string
+	for l := 0; l < linesCount; l += 500 {
+		if err := InsertToFile(tf.Name(), "test string", l, 50, false); err != nil {
+			b.Fatal(err)
+		}
+		b.Log("write")
+	}
+	b.Log("init")
+
+	i := 0
+	for b.Loop() {
+		i++
 	}
 }

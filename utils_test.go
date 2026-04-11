@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"runtime/debug"
 	"slices"
 	"strings"
 	"testing"
@@ -110,13 +109,13 @@ func TestCountLines(t *testing.T) {
 	}
 }
 
-func writeAndIncrementCount(f *os.File, b []byte, c *uint64, t *testing.T) {
+func writeAndIncrementCount(f *os.File, b []byte, c *int, t *testing.T) {
 	_, err := f.Write(b)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	(*c) += uint64(len(b))
+	(*c) += len(b)
 }
 
 func TestCountChars(t *testing.T) {
@@ -128,13 +127,13 @@ func TestCountChars(t *testing.T) {
 	thirdLine := "third"
 	newLine := []byte{'\n'}
 
-	expCount := uint64(0)
+	expCount := 0
 	writeAndIncrementCount(tmpFile.f, []byte(firstLine), &expCount, t)
 	writeAndIncrementCount(tmpFile.f, newLine, &expCount, t)
 	writeAndIncrementCount(tmpFile.f, []byte(secondLine), &expCount, t)
 	writeAndIncrementCount(tmpFile.f, newLine, &expCount, t)
 	writeAndIncrementCount(tmpFile.f, []byte(thirdLine), &expCount, t)
-	if expCount < uint64(len(firstLine)) {
+	if expCount < len(firstLine) {
 		panic("testing function is bad")
 	}
 
@@ -162,7 +161,7 @@ func TestAppendEmptyLines(t *testing.T) {
 	tf := createTemp()
 	defer tf.Close()
 
-	if err := AppendEmptyLines(tf.Name(), 1); err != nil {
+	if err := AppendEmptyLinesPaths(tf.Name(), 1); err != nil {
 		panic(err)
 	}
 
@@ -194,7 +193,7 @@ func TestAppendEmptyLines(t *testing.T) {
 		t.Fatalf("expected 2 lines, got %d", res)
 	}
 
-	if err = AppendEmptyLines(tf.Name(), 5); err != nil {
+	if err = AppendEmptyLinesPaths(tf.Name(), 5); err != nil {
 		panic(err)
 	}
 
@@ -210,7 +209,7 @@ func TestAppendEmptyLines(t *testing.T) {
 		panic(err)
 	}
 	exp := len(notEmpty) + 7
-	if uint64(exp) != res {
+	if exp != res {
 		t.Fatalf("expected %d chars, has %d", exp, res)
 	}
 }
@@ -235,7 +234,7 @@ func TestFillFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if resLines != uint64(expLines) {
+	if resLines != expLines {
 		t.Log("bad resulted lines")
 		t.Fatalf("expected %d, got %d", expLines, resLines)
 	}
@@ -244,7 +243,7 @@ func TestFillFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count < uint64(n) {
+	if count < n {
 		t.Fatalf("bad count %d", count)
 	}
 
@@ -252,7 +251,7 @@ func TestFillFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != uint64(n) {
+	if count != n {
 		t.Log("bad char count")
 		t.Fatalf("expected %d, result %d", n, count)
 	}
@@ -339,8 +338,22 @@ func TestInsertToString(t *testing.T) {
 
 	if res != expected {
 		t.Log("bad string insertion (end of string)")
-		t.Fatalf("expected %s, got %s", expected, res)
+		t.Fatalf("expected \"%s\", got \"%s\"", expected, res)
 	}
+}
+
+func TestInsertToEmptyString(t *testing.T) {
+	org := ""
+	exp := "exp"
+	res, err := InsertToString(org, exp, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if res != exp {
+		t.Fatal(expGot(exp, res))
+	}
+
 }
 
 func expGot(exp, res any) string {
@@ -400,13 +413,6 @@ func TestOverrideString(t *testing.T) {
 	if res != exp {
 		t.Log("bad string override (post-end)")
 		t.Fatal(expGot(exp, res))
-	}
-
-	// test error
-	idx = len(org) + 1
-	_, err = OverrideString(org, override, idx)
-	if err == nil {
-		t.Fatal("expected some error but got none")
 	}
 }
 
@@ -493,8 +499,7 @@ func TestInsertToFile(t *testing.T) {
 
 	test := func(str string, line, col int, override bool) {
 		onErr := func(err error) {
-			t.Log(string(debug.Stack()))
-			t.Fatal(err)
+			panic(err)
 		}
 		initTmpFile()
 		err := InsertToFile(tmp.Name(), str, line, col, override)
@@ -586,4 +591,588 @@ func TestInsertToFile(t *testing.T) {
 	testOverride("", 1, 1)
 	testOverride("", 2, 1)
 	testOverride("", 3, 1)
+}
+
+func TestInsertToFileBeyondItsLineNumber(t *testing.T) {
+	tf := createTemp()
+	defer tf.Close()
+
+	if err := WriteLine(tf.Name(), "some line"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := InsertToFile(tf.Name(), "some string", 3, 3, false); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := ReadAt(tf.Name(), 3, 3, len("some string"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if res != "some string" {
+		t.Fatal("expected different string")
+	}
+}
+
+func TestAppendNLines(t *testing.T) {
+	lines := []string{
+		"first", "second", "third",
+	}
+
+	dst := createTemp()
+	defer dst.Close()
+	src := initTmpWithLines(lines)
+	defer src.Close()
+	srcpath := src.Name()
+	dstpath := dst.Name()
+
+	testZeroSrcn := func(nLines, srcn int) {
+		if nLines > len(lines) {
+			panic("bad testing")
+		}
+
+		prevDstLines, err := CountLines(dstpath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		srcLines, err := CountLines(src.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var isExpectedEof bool = srcLines < srcn+nLines
+		linesAvailableForCopy := max(len(lines)-(srcn-1), 0)
+		expCopiedLine := min(linesAvailableForCopy, nLines)
+		linesCopied, err := AppendFromTo(srcpath, dstpath, nLines, srcn)
+		if err != nil {
+			if IsEof(err) && isExpectedEof {
+				// all good
+			} else {
+				t.Fatal(fmt.Errorf("error during tests - nLines:%d,srcn:%d :\n%w", nLines, srcn, err))
+			}
+		}
+
+		if linesCopied != expCopiedLine {
+			t.Fatalf("expected to copy %d lines, copied :%d, nLines:%d, srcn:%d", expCopiedLine, linesCopied, nLines, srcn)
+		}
+
+		curDstLines, err := CountLines(dstpath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if curDstLines != prevDstLines+expCopiedLine {
+			panic(fmt.Errorf("dst file expected to have %d line (has %d)", nLines, linesCopied))
+		}
+
+		for i := 1; i < expCopiedLine; i++ {
+			dstLine, err := ReadLine(dstpath, i+prevDstLines)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			srcLine, err := ReadLine(srcpath, srcn+i-1)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if dstLine != srcLine {
+				t.Fatalf("line is different than expected at index %d, has \"%s\", expected \"%s\", nLines:%d, srcn;%d", i, dstLine, srcLine, nLines, srcn)
+			}
+		}
+	}
+
+	testZeroSrcn(0, 1)
+	testZeroSrcn(0, 2)
+	testZeroSrcn(0, 3)
+	testZeroSrcn(1, 1)
+	testZeroSrcn(1, 2)
+	testZeroSrcn(1, 3)
+	testZeroSrcn(2, 1)
+	testZeroSrcn(2, 2)
+	testZeroSrcn(2, 3)
+	testZeroSrcn(2, 4)
+	testZeroSrcn(3, 1)
+	testZeroSrcn(3, 2)
+	testZeroSrcn(3, 3)
+	testZeroSrcn(3, 4)
+	testZeroSrcn(3, 5)
+}
+
+func TestInsertToFileMultipleWithOneArgumentOnEmptyFile(t *testing.T) {
+	emptyFile := createTemp()
+	defer emptyFile.Close()
+	str := "Some Unique String"
+
+	line := 1
+	col := 1
+	override := false
+	arg := InsertToFileArg{
+		line:     line,
+		col:      col,
+		override: override,
+		str:      str,
+	}
+
+	argArray := []InsertToFileArg{arg}
+	if err := InsertToFileMultiple(emptyFile.Name(), argArray); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := ReadAt(emptyFile.Name(), line, col, len(str))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if res != str {
+		t.Fatalf("expected identical strings (has %s, expected %s)", res, str)
+	}
+
+	line = 9
+	col = 15
+	arg = InsertToFileArg{
+		line:     line,
+		col:      col,
+		override: override,
+		str:      str,
+	}
+
+	if err := os.Truncate(emptyFile.Name(), 0); err != nil {
+		panic(err)
+	}
+
+	argArray = []InsertToFileArg{arg}
+	if err := InsertToFileMultiple(emptyFile.Name(), argArray); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err = ReadAt(emptyFile.Name(), line, col, len(str))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if res != str {
+		t.Fatalf("expected identical strings (has %s, expected %s)", res, str)
+	}
+
+	// override
+	str = "override the previous one"
+	override = true
+	arg = InsertToFileArg{
+		line:     line,
+		col:      col,
+		override: override,
+		str:      str,
+	}
+
+	if err := os.Truncate(emptyFile.Name(), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	argArray = []InsertToFileArg{arg}
+	if err := InsertToFileMultiple(emptyFile.Name(), argArray); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err = ReadLine(emptyFile.Name(), line)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(res) <= 0 {
+		t.Fatalf("line len is %d", len(res))
+	}
+
+	res, err = ReadAt(emptyFile.Name(), line, col, len(str))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if res != str {
+		t.Fatalf("expected identical strings (has %s, expected %s)", res, str)
+	}
+
+	newArg := func() InsertToFileArg {
+		return InsertToFileArg{
+			line:     line,
+			col:      col,
+			override: override,
+			str:      str,
+		}
+	}
+
+	newArgArray := func() []InsertToFileArg {
+		return []InsertToFileArg{newArg()}
+	}
+	// look for errors
+	line = 0
+	argArray = newArgArray()
+	if err = InsertToFileMultiple(emptyFile.Name(), argArray); err == nil {
+		t.Fatal("expected some error since line number is 0")
+	}
+
+	line = 99
+	col = 0
+	argArr := newArgArray()
+	if err = InsertToFileMultiple(emptyFile.Name(), argArr); err == nil {
+		t.Fatal("expected some error since col number is 0")
+	}
+}
+
+func TestInsertToFileMultipleWithMultipleArgumentsOnEmptyFile(t *testing.T) {
+	f := createTemp()
+	defer f.Close()
+
+	str1 := "str1111111111111111111111111111"
+	line1 := 5
+	col1 := 6
+	override1 := false
+	arg1 := InsertToFileArg{
+		line:     line1,
+		col:      col1,
+		override: override1,
+		str:      str1,
+	}
+
+	str2 := "str22222222222222222222222"
+	line2 := 19
+	col2 := 33
+	override2 := false
+	arg2 := InsertToFileArg{
+		line:     line2,
+		col:      col2,
+		override: override2,
+		str:      str2,
+	}
+
+	str3 := "str3333333333333333333333333"
+	line3 := 994
+	col3 := 15
+	override3 := true
+	arg3 := InsertToFileArg{
+		line:     line3,
+		col:      col3,
+		override: override3,
+		str:      str3,
+	}
+
+	argArray := []InsertToFileArg{arg1, arg2, arg3}
+	if err := InsertToFileMultiple(f.Name(), argArray); err != nil {
+		t.Fatal(err)
+	}
+
+	// arg1
+	res, err := ReadAt(f.Name(), line1, col1, len(str1))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if res != str1 {
+		t.Fatalf("expected %s, has %s", str1, res)
+	}
+
+	// arg2
+	res, err = ReadLine(f.Name(), line2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) <= 0 {
+		t.Fatal("line is empty")
+	}
+
+	res, err = ReadAt(f.Name(), line2, col2, len(str2))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if res != str2 {
+		t.Fatalf("expected %s, has %s", str2, res)
+	}
+
+	// arg3
+	res, err = ReadLine(f.Name(), line3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) <= 0 {
+		t.Fatal("line is empty")
+	}
+	res, err = ReadAt(f.Name(), line3, col3, len(str3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res != str3 {
+		t.Fatalf("expected %s, has %s", str3, res)
+	}
+
+	// look for errors
+	argArray[2].col = -1
+	if err = InsertToFileMultiple(f.Name(), argArray); err == nil {
+		t.Fatal("expected error since last argument col is -1")
+	}
+}
+
+func TestInsertToFileMultipleOneArgNonEmptyFile(t *testing.T) {
+	// initialize file
+	lines := []string{}
+	const linesNum = 999
+	for i := 1; i <= linesNum; i++ {
+		lines = append(lines, fmt.Sprintf("this is line %d", i))
+	}
+	tf := initTmpWithLines(lines)
+	if cnt, err := CountLines(tf.Name()); err != nil || cnt != linesNum {
+		panic("something bad happened")
+	}
+
+	line := 1
+	col := 1
+	override := false
+	str := "Hello"
+
+	newArg := func() InsertToFileArg {
+		return InsertToFileArg{
+			line:     line,
+			col:      col,
+			override: override,
+			str:      str,
+		}
+	}
+
+	newArgArr := func() []InsertToFileArg {
+		return []InsertToFileArg{newArg()}
+	}
+
+	callInsert := func() error {
+		return InsertToFileMultiple(tf.Name(), newArgArr())
+	}
+
+	if err := callInsert(); err != nil {
+		t.Fatal(err)
+	}
+
+	srcPath := tf.Name()
+
+	test := func() {
+		var origLine string
+		if len(lines) < line {
+			origLine = ""
+		} else {
+			origLine = lines[line-1]
+		}
+
+		getExpLine := func() string {
+			var ret string
+			var err error
+			if override {
+				ret, err = OverrideString(origLine, str, col-1)
+			} else {
+				ret, err = InsertToString(origLine, str, col-1)
+			}
+
+			if err != nil {
+				panic(err)
+			}
+
+			return ret
+		}
+
+		expLine := getExpLine()
+		resLine, err := ReadLine(srcPath, line)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		fmtArg := fmt.Sprintf("%+v", newArg())
+
+		if expLine != resLine {
+			t.Fatalf("exp: %s, res: %s, args : %v", expLine, resLine, fmtArg)
+		}
+
+		if len(lines) < line {
+			for len(lines) < line {
+				lines = append(lines, origLine)
+			}
+		}
+
+		lines[line-1] = resLine // file lines have changed
+
+		linesCnt, err := CountLines(srcPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if linesCnt != len(lines) {
+			t.Fatalf("something happened to the lines count, args : %v", fmtArg)
+		}
+	}
+	test()
+
+	callInsertNoErrors := func() {
+		if err := callInsert(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	callTestNoErrors := func() {
+		callInsertNoErrors()
+		test()
+	}
+
+	line = 9
+	callTestNoErrors()
+
+	str = "same line different string"
+	callTestNoErrors()
+
+	col = 3
+	callTestNoErrors()
+
+	str = "same col"
+	callTestNoErrors()
+
+	col = 2
+	callTestNoErrors()
+
+	override = true
+	callTestNoErrors()
+
+	override = false
+	callTestNoErrors()
+
+	override = true
+	str = "different str"
+	callTestNoErrors()
+
+	line = 1001
+	callTestNoErrors()
+
+	// now expect some errors
+	col = -1
+	if err := callInsert(); err == nil {
+		t.Fatal("expected some error since col is -1s")
+	}
+
+	col = 229
+	callTestNoErrors()
+
+	line = -99
+	if err := callInsert(); err == nil {
+		t.Fatal("expected some error since line is -99")
+	}
+
+}
+
+func TestInsertToFileMultipleManyArgsNonEmptyFile(t *testing.T) {
+	expLines := []string{}
+	const numOfLines = 1000
+	for i := range numOfLines {
+		expLines = append(expLines, fmt.Sprintf("This is line number %d", i))
+	}
+	tmp := initTmpWithLines(expLines)
+
+	newArg := func(line, col int, str string, override bool) InsertToFileArg {
+		return InsertToFileArg{
+			line:     line,
+			col:      col,
+			override: override,
+			str:      str,
+		}
+	}
+
+	argArrayWithErrors := []InsertToFileArg{
+		newArg(-1, 5, "should cause an error (line)", true),
+		newArg(2, 0, "should cause an error (col)", true),
+		newArg(1000, 80, "Should be inserted at line 1000", true),
+		newArg(999, 1, "This is line number 999 (but with some text)", true),
+		newArg(1, 1, "Holla", true),
+		newArg(1, 30, "yo", false),
+		newArg(500, 9, "500 500 500 500", false),
+		newArg(500, 11, "500-11 500-11 500-11 500-11", false),
+		newArg(3000, 9, "3000 3000 3000 3000", true),
+	}
+
+	if err := InsertToFileMultiple(tmp.Name(), argArrayWithErrors); err == nil {
+		t.Fatal("expected errors to occur")
+	}
+
+	validArgArray := []InsertToFileArg{}
+	for _, a := range argArrayWithErrors {
+		if a.col <= 0 || a.line <= 0 {
+			continue
+		}
+		validArgArray = append(validArgArray, a)
+	}
+
+	if len(validArgArray) < 5 {
+		panic("not what you wanted")
+	}
+
+	updateExpLines := func() {
+		clone := slices.Clone(validArgArray)
+		sortByLineAndCol(clone)
+
+		linesVisited := []int{}
+		for i, curArg := range validArgArray {
+			l := curArg.line
+			if slices.Contains(linesVisited, l) {
+				continue
+			}
+
+			sameLineArgs := []InsertToFileArg{curArg}
+			for _, anotherArg := range validArgArray[i+1:] {
+				if anotherArg.line != l {
+					break
+				}
+
+				sameLineArgs = append(sameLineArgs, anotherArg)
+			}
+
+			for len(expLines) < l {
+				expLines = append(expLines, "")
+			}
+
+			for _, a := range sameLineArgs {
+				var newExpLine string
+				var err error
+				orgLine := expLines[l-1]
+				if a.override {
+					newExpLine, err = OverrideString(orgLine, a.str, a.col-1)
+				} else {
+					newExpLine, err = InsertToString(orgLine, a.str, a.col-1)
+				}
+
+				if err != nil {
+					t.Fatalf("err : %s, arg: %+v", err.Error(), a)
+				}
+
+				expLines[l-1] = newExpLine
+			}
+
+			linesVisited = append(linesVisited, l)
+		}
+
+	}
+
+	test := func(arg InsertToFileArg) {
+		expLine := expLines[arg.line-1]
+		resLine, err := ReadLine(tmp.Name(), arg.line)
+		if err != nil {
+			t.Fatalf("error occured: %s, arg %+v", err.Error(), arg)
+		}
+
+		if resLine != expLines[arg.line-1] {
+			t.Fatalf("exp : %s, res %s, arg %+v", expLine, resLine, arg)
+		}
+	}
+
+	if err := InsertToFileMultiple(tmp.Name(), validArgArray); err != nil {
+		t.Fatal(err)
+	}
+
+	updateExpLines()
+	for _, a := range validArgArray {
+		test(a)
+	}
 }
