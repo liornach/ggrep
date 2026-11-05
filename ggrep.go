@@ -2,8 +2,12 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
+	"io/fs"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/fatih/color"
@@ -106,12 +110,89 @@ func FindAllOccurences(filePath, str string) ([]OccurenceInLine, error) {
 	return occurences, nil
 }
 
+type filter struct {
+	textOnly bool
+}
+
+func isBinaryFile(filename string) (bool, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return false, fmt.Errorf("could not open %s, error : %v", filename, err)
+	}
+
+	firstBytes := make([]byte, 512)
+	readBytes, err := file.Read(firstBytes)
+	if err != nil {
+		return false, fmt.Errorf("could not read first bytes, error : %v", err)
+	}
+
+	contentType := http.DetectContentType(firstBytes[:readBytes])
+	if !strings.Contains(contentType, "text") && !strings.Contains(contentType, "json") {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func (f filter) shouldFilter(filename string) (bool, error) {
+	if f.textOnly {
+		res, err := isBinaryFile(filename)
+		if err != nil {
+			return false, err
+		}
+		if res == true {
+			return true, nil
+		}
+	}
+
+	return false, nil
+
+}
+
+func FindAllOccurencesRec(dirpath, str string, f filter) ([]OccurenceInLine, error) {
+	res := []OccurenceInLine{}
+
+	// type WalkDirFunc func(path string, d DirEntry, err error) error
+	err := filepath.WalkDir(dirpath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		filter, err := f.shouldFilter(path)
+		if err != nil {
+			return err
+		}
+
+		if filter {
+			return nil
+		}
+
+		thisFileRes, err := FindAllOccurences(path, str)
+		if err != nil {
+			return err
+		}
+
+		res = append(res, thisFileRes...)
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return res, nil
+}
+
 func print(format string, a ...any) {
 	fmt.Printf(format, a...)
 }
 
 func fatal(format string, a ...any) {
-	fmt.Printf(format, a...)
+	fmt.Printf(format+"\n", a...)
 	os.Exit(-1)
 }
 
@@ -126,21 +207,71 @@ func paintSubstrRed(str, substr string) string {
 	return strings.ReplaceAll(str, substr, redSubstr)
 }
 
+type args struct {
+	recursive          bool
+	searchPath         string
+	strToSearch        string
+	includeBinaryFiles bool
+}
+
+func parseArgs() (args, error) {
+	recursive := flag.Bool("r", false, "search the string recursivly")
+	includeBinaryFiles := flag.Bool("include-binary", false, "whether to include binary files in the search")
+	flag.Parse()
+	remainingArgs := flag.Args()
+	if len(remainingArgs) < 1 {
+		return args{}, fmt.Errorf("must specify string to search")
+	}
+
+	if len(remainingArgs) < 2 {
+		return args{}, fmt.Errorf("search path must be specified")
+	}
+
+	strToSearch := remainingArgs[0]
+	searchPath := remainingArgs[1]
+
+	return args{
+		recursive:          *recursive,
+		searchPath:         searchPath,
+		strToSearch:        strToSearch,
+		includeBinaryFiles: *includeBinaryFiles,
+	}, nil
+}
+
+func CreateFilterFromArgs(a args) (filter, error) {
+	return filter{
+		textOnly: !a.includeBinaryFiles,
+	}, nil
+}
+
 func main() {
-	if len(os.Args) < 3 {
-		fatal("Usage : ggrep <str> <file>")
-	}
-
-	str := os.Args[1]
-	filePath := os.Args[2]
-
-	results, err := FindAllOccurences(filePath, str)
+	args, err := parseArgs()
 	if err != nil {
-		fatal("failed to search in file, err :\n%s", err.Error())
+		fatal(err.Error())
 	}
 
-	for _, res := range results {
-		line, err := ReadLine(filePath, int(res.lineNum))
+	str := args.strToSearch
+	searchPath := args.searchPath
+
+	var result []OccurenceInLine
+	if !args.recursive {
+		result, err = FindAllOccurences(searchPath, str)
+		if err != nil {
+			fatal("failed to search in file, err :\n%s", err.Error())
+		}
+	} else {
+		f, err := CreateFilterFromArgs(args)
+		if err != nil {
+			fatal(err.Error())
+		}
+		result, err = FindAllOccurencesRec(searchPath, str, f)
+		if err != nil {
+			fatal("failed to search in path, err :\n%s", err.Error())
+		}
+	}
+
+	for _, res := range result {
+		line, err := ReadLine(searchPath, int(res.lineNum))
 		if err != nil {
 			fatal("%s", err.Error())
 		}
